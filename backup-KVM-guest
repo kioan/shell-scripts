@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+VER="0.1"
+AUTHOR="kioan <https://github.com/kioan>"
+ABOUT="$(basename ${0}) v${VER}, by ${AUTHOR}"
+
+Usage()
+{
+    echo "Usage:"
+    echo "   $(basename ${0}) [options] -m <VM name> -d <destination directory>"
+}
+
+Help()
+{
+    echo ${ABOUT}
+    echo "Script for KVM guest VM backups (disks & configuration)."
+    echo ""
+    Usage
+    echo ""
+    echo "Options:"
+    echo "  -h     print help and exit"
+    echo ""
+    echo "Description:"
+    echo "  Backups are taken in 3 steps: VM Shutdown - Backup - VM Start."
+    echo "  The backup files will be stored in a new subdirectory created under the specified <destination directory>"
+    echo "  The name of the new directory will contain the <VM name> and current datetime."
+    echo ""
+    echo "Example:"
+    echo "  running \`$(basename ${0}) -m virtserver -d /backup\` now"
+    echo "  will save the backup to the directory /backup/virtserver_$(date +"%Y-%m-%d_%Hh%Mm")/"
+}
+
+while getopts m:d:h flag; do
+    case "${flag}" in
+    m) # Guest VM name
+        VM=${OPTARG}
+        ;;
+    d) # Backup destination directory
+        BACKUP_BASEDIR=${OPTARG}
+        ;;
+    h)
+        Help
+        exit
+        ;;
+    \?) # Invalid option
+        echo "Error: Invalid option"
+        exit
+        ;;
+    esac
+done
+shift "$((OPTIND - 1))"
+
+if [ -z ${BACKUP_BASEDIR} ] || [ -z "${VM}" ]; then
+    echo "Error: Missing -m and/or -d opernad" >&2
+    Usage
+    echo "Try \`$(basename ${0}) -h\` for more information"
+    exit 1
+fi
+
+# Exit if destination does not exist
+if [ ! -d ${BACKUP_BASEDIR} ]; then
+    echo "Error: Directory ${BACKUP_BASEDIR} does not exist" >&2
+    exit 1
+fi
+
+# Exit if th VM name dows not exist
+if ! virsh list --all | grep -q " ${VM} "; then
+    echo "Error: VM ${VM} does not exist" >&2
+    exit 1
+fi
+
+echo "Backing up VM: ${VM}"
+
+BACKUP_DEST="${BACKUP_BASEDIR}/${VM}_$(date +"%Y-%m-%d_%Hh%Mm")"
+mkdir -p $BACKUP_DEST
+echo "Backup destination: ${BACKUP_DEST}"
+
+echo "VM ${VM} shutdown started"
+virsh shutdown ${VM}
+
+# wait for the VM to shutdown
+state=$(virsh list --all | grep " ${VM} " | awk '{ print $3}')
+while ([ "$state" != "" ] && [ "$state" == "running" ]); do
+    echo "...waiting for shutdown..."
+    sleep 10
+    state=$(virsh list --all | grep " $VM " | awk '{ print $3}')
+done
+
+echo "VM ${VM} shutdown complete"
+
+echo "Exporting XML configuration"
+virsh dumpxml ${VM} >"${BACKUP_DEST}/${VM}.xml"
+
+# get list of VM disks
+disks=$(virsh domblklist ${VM} --details | awk '/disk/{print $4}')
+
+total_disks_size=0
+for disk in $disks; do
+    disksize=$(du --apparent-size ${disk} | awk '{print $1}')
+    disksize_h=$(du -h --apparent-size ${disk} | awk '{print $1}')
+    total_disks_size=$(($total_disks_size + $disksize))
+    echo "Found disk ${disk} with size ${disksize_h}"
+done
+
+available_space=$(df --output=avail ${BACKUP_DEST} | tail -n1)
+
+if [[ $available_space -lt $total_disks_size ]]; then # 10G = 10*1024*1024k
+    echo "Not enough free space available for backups (free:${available_space}, required:${total_disks_size})"
+    exit 1
+fi
+
+for disk in $disks; do
+    echo "Copying disk ${disk} to ${BACKUP_DEST}"
+    cp ${disk} ${BACKUP_DEST}
+done
+echo "Backup complete!"
+
+echo "VM ${VM} is starting"
+virsh start ${VM}
