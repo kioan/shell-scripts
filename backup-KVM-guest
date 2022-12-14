@@ -4,14 +4,12 @@ VER="0.1"
 AUTHOR="kioan <https://github.com/kioan>"
 ABOUT="$(basename ${0}) v${VER}, by ${AUTHOR}"
 
-Usage()
-{
+Usage() {
     echo "Usage:"
     echo "   $(basename ${0}) [options] -m <VM name> -d <destination directory>"
 }
 
-Help()
-{
+Help() {
     echo ${ABOUT}
     echo "Script for KVM guest VM backups (disks & configuration)."
     echo ""
@@ -51,7 +49,7 @@ done
 shift "$((OPTIND - 1))"
 
 if [ -z ${BACKUP_BASEDIR} ] || [ -z "${VM}" ]; then
-    echo "Error: Missing -m and/or -d opernad" >&2
+    echo -e "Error: Missing -m and/or -d opernad" >&2
     Usage
     echo "Try \`$(basename ${0}) -h\` for more information"
     exit 1
@@ -63,57 +61,97 @@ if [ ! -d ${BACKUP_BASEDIR} ]; then
     exit 1
 fi
 
+DateStart=$(date -u +%s)
+
+# abort on nonzero exitstatus
+set -o errexit
+# abort on unbound variable
+set -o nounset
+# don't hide errors within pipes
+set -o pipefail
+
 # Exit if th VM name dows not exist
 if ! virsh list --all | grep -q " ${VM} "; then
     echo "Error: VM ${VM} does not exist" >&2
     exit 1
 fi
 
-echo "Backing up VM: ${VM}"
-
 BACKUP_DEST="${BACKUP_BASEDIR}/${VM}_$(date +"%Y-%m-%d_%Hh%Mm")"
 mkdir -p $BACKUP_DEST
-echo "Backup destination: ${BACKUP_DEST}"
 
-echo "VM ${VM} shutdown started"
+echo "Backup parameters"
+echo "  Guest VM name: ${VM}"
+echo "  Backup dest. : ${BACKUP_DEST}"
+
+echo ""
+echo "Shutting down VM"
 virsh shutdown ${VM}
 
 # wait for the VM to shutdown
 state=$(virsh list --all | grep " ${VM} " | awk '{ print $3}')
 while ([ "$state" != "" ] && [ "$state" == "running" ]); do
-    echo "...waiting for shutdown..."
+    echo "  ...waiting for shutdown..."
     sleep 10
     state=$(virsh list --all | grep " $VM " | awk '{ print $3}')
 done
+echo "  shutdown complete"
 
-echo "VM ${VM} shutdown complete"
+echo ""
+xml_dest="${BACKUP_DEST}/${VM}.xml"
+echo "Saving VM configuration"
+virsh dumpxml ${VM} >${xml_dest}
 
-echo "Exporting XML configuration"
-virsh dumpxml ${VM} >"${BACKUP_DEST}/${VM}.xml"
+if [ -f ${xml_dest} ]; then
+    echo "  XML saved to ${xml_dest}"
+else
+    echo -e "  $EMOJI_CROSS XML not saved" >&2
+fi
+
+echo ""
+echo "Examining disks"
 
 # get list of VM disks
 disks=$(virsh domblklist ${VM} --details | awk '/disk/{print $4}')
 
 total_disks_size=0
 for disk in $disks; do
-    disksize=$(du --apparent-size ${disk} | awk '{print $1}')
+    disksize=$(du -b --apparent-size ${disk} | awk '{print $1}')
     disksize_h=$(du -h --apparent-size ${disk} | awk '{print $1}')
     total_disks_size=$(($total_disks_size + $disksize))
-    echo "Found disk ${disk} with size ${disksize_h}"
+    # echo "  Disk ${disk} with size ${disksize_h}"
+    printf "  [%5s] %s\n" ${disksize_h} ${disk}
 done
 
-available_space=$(df --output=avail ${BACKUP_DEST} | tail -n1)
+available_space=$(df -B1 --output=avail ${BACKUP_DEST} | tail -n1)
+
+echo "  Space Required :" $(numfmt --to=iec-i --suffix=B --format="%.2f" ${total_disks_size})
+echo "  Space Available:" $(numfmt --to=iec-i --suffix=B --format="%.2f" ${available_space})
 
 if [[ $available_space -lt $total_disks_size ]]; then # 10G = 10*1024*1024k
-    echo "Not enough free space available for backups (free:${available_space}, required:${total_disks_size})"
+    echo "  Error: Not enough free space available for backups" >&2
     exit 1
 fi
 
+echo ""
+echo "Copying disks"
+
 for disk in $disks; do
-    echo "Copying disk ${disk} to ${BACKUP_DEST}"
+    printf "  %s\n" ${disk}
     cp ${disk} ${BACKUP_DEST}
 done
-echo "Backup complete!"
 
-echo "VM ${VM} is starting"
+echo ""
+echo "Backup completed"
+
+echo ""
+echo "Starting VM"
 virsh start ${VM}
+
+DateEnd=$(date -u +%s)
+
+echo ""
+echo "Execution report"
+echo "  Start  :" $(date -d@$DateStart +'%Y-%m-%d %H:%M:%S %z')
+echo "  End    :" $(date -d@$DateEnd +'%Y-%m-%d %H:%M:%S %z')
+# echo "Elapsed :" $(date -d@$SECONDS -u +%H:%M:%S)
+echo "  Elapsed:" $(date -u -d "0 $DateEnd seconds - $DateStart seconds" +%H:%M:%S)
