@@ -9,9 +9,8 @@ To use this script, you will need:
 
 
 ## Usage
-Edit the configuration file `backup-paths.config` and specify the filesystem paths you want to backup, one per line.
-Run the script by executing `kioan-backup.sh backup-paths.config`. The script will read the configuration file and create a timestamped tar.gz archive for each path specified in the file.
-The resulting backup archives will be stored in the directory specified in `$dest` variable at the beggining of the script.
+Create a configuration file e.g. `backup-paths.txt` and specify the filesystem paths you want to backup, one per line.
+Run the script by executing `kioan-backup.sh -c backup-paths.config -d /destination/path`. The script will read the configuration file and create a timestamped tar.gz archive in the directory specified with the `-d` option.
 
 
 ## Configuration File Format

@@ -1,0 +1,8 @@
+# List of files and directories to backup.
+#
+# Examples of valid entries:
+#
+# /path/to/file
+# /path/to/directory
+# /path/to/pattern.??
+# /path/to/*.ext
